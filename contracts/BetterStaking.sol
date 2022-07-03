@@ -6,7 +6,6 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./Manageable.sol";
 
 
-// TODO: vesting, lock mechanic
 contract BetterFarm is Manageable {
     using SafeERC20 for IERC20;
 
@@ -14,6 +13,8 @@ contract BetterFarm is Manageable {
     struct UserInfo {
         uint256 amount;     // How many deposit tokens the user has provided.
         uint256 rewardDebt; // Reward debt. See explanation below.
+        uint256 vested;
+        uint256 released;
     }
 
     // Info of each pool.
@@ -25,10 +26,12 @@ contract BetterFarm is Manageable {
         uint256 rewardTokenPerSecond;
         uint256 rewardTokensToDistribute; // overall sum of reward tokens to distribute across users
         uint256 unclaimedRewardTokens; // reward tokens that could be claimed by admins, because no users pretend to claim it
-        uint32 lastRewardTime;  // Last block timestampt that tokens distribution occurs.
+        uint32 lastRewardTime;  // Last block timestamp that tokens distribution occurs.
         uint32 start; // timestamp when farming starts
         uint32 duration; // duration of farming after start
         uint32 lockTime;
+        uint32 vestingStart;
+        uint32 vestingDuration;
     }
 
     // amount of deposited tokens that cannot be withdrawn by admins
@@ -59,7 +62,9 @@ contract BetterFarm is Manageable {
         IERC20 _rewardToken,
         uint32 _start,
         uint32 _duration,
-        uint32 _lockTime
+        uint32 _lockTime,
+        uint32 _vestingStart,
+        uint32 _vestingDuration
     ) public onlyStakingManager {
         uint32 lastRewardTime = block.timestamp > _start ? block.timestamp : _start;
         uint256 rewardTokenPerSecond = rewardTokensToDistribute / duration;
@@ -74,7 +79,9 @@ contract BetterFarm is Manageable {
             unclaimedRewardTokens: 0,
             start: _start,
             duration: _duration,
-            lockTime: _lockTime
+            lockTime: _lockTime,
+            vestingStart: _vestingStart,
+            vestingDuration: _vestingDuration
         }));
 
         _rewardToken.safeTransferFrom(_msgSender(), address(this), _rewardTokensToDistribute);
@@ -111,8 +118,18 @@ contract BetterFarm is Manageable {
         return ((user.amount * accRewardPerShare) / PRECISION_MULTIPLIER) - user.rewardDebt;
     }
 
+    function _calcReleasable(PoolInfo storage pool, uint256 vested, uint256 released) internal returns (uint256 releasable) {
+        if (block.timestamp <= pool.vestingStart) {
+            return 0;
+        } else if (block.timestamp >= (pool.vestingStart + pool.vestingDuration)) {
+            return vested - released;
+        } else {
+            return (vested * (block.timestamp - pool.vestingStart)) / (pool.vestingDuration) - released;
+        }
+    }
+
     // View function to see pending tokens on frontend.
-    function pendingReward(uint256 _pid, address _user) external view returns (uint256) {
+    function pendingReward(uint256 _pid, address _user) external view returns (uint256 locked, uint256 releasable) {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_user];
 
@@ -123,7 +140,9 @@ contract BetterFarm is Manageable {
             accRewardPerShare += (newReward * PRECISION_MULTIPLIER) / pool.depositedAmount;
         }
 
-        return _calcPendingReward(user, accRewardPerShare);
+        uint256 new_vested = user.vested + _calcPendingReward(user, accRewardPerShare);
+        releasable = _calcReleasable(pool, new_vested, user.released);
+        locked = new_vested - user.released - releasable;
     }
 
     // Deposit tokens to BetterFarm for reward allocation.
@@ -136,11 +155,7 @@ contract BetterFarm is Manageable {
         // user deposited something already, transfer reward
         if (user.amount > 0) {
             uint256 pending = _calcPendingReward(user, pool.accRewardPerShare);
-            if (pending > 0) {
-                pool.rewardToken.safeTransfer(_msgSender(), pending);
-                rewardTokens[address(pool.rewardToken)] -= pending;
-                emit Reward(_msgSender(), _pid, pending);
-            }
+            user.vested += pending;
         }
 
         pool.depositToken.safeTransferFrom(_msgSender(), address(this), _amount);
@@ -166,11 +181,7 @@ contract BetterFarm is Manageable {
 
         updatePool(_pid);
         uint256 pending = _calcPendingReward(user, pool.accRewardPerShare);
-        if (pending > 0) {
-            pool.rewardToken.safeTransfer(_msgSender(), pending);
-            rewardTokens[address(pool.rewardToken)] -= pending;
-            emit Reward(_msgSender(), _pid, pending);
-        }
+        user.vested += pending;
 
         user.amount -= _amount;
         pool.depositedAmount -= _amount;
@@ -188,10 +199,17 @@ contract BetterFarm is Manageable {
 
         updatePool(_pid);
         uint256 pending = _calcPendingReward(user, pool.accRewardPerShare);
-        if (pending > 0) {
-            pool.rewardToken.safeTransfer(_msgSender(), pending);
-            rewardTokens[address(pool.rewardToken)] -= pending;
-            emit Reward(_msgSender(), _pid, pending);
+        user.vested += pending;
+
+        if (user.vested > 0) {
+            uint256 releasable = _calcReleasable(pool, user.vested, user.released);
+            user.released += releasable;
+
+            if (releasable > 0) {
+                pool.rewardToken.safeTransfer(_msgSender(), releasable);
+                rewardTokens[address(pool.rewardToken)] -= releasable;
+                emit Reward(_msgSender(), _pid, releasable);
+            }
         }
 
         user.rewardDebt = (user.amount * pool.accRewardPerShare) / PRECISION_MULTIPLIER;
