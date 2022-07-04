@@ -92,7 +92,7 @@ contract BetterStaking is Manageable {
 
     // Return reward multiplier over the given _from to _to block.
     function getMultiplier(uint256 _from, uint256 _to) public pure returns (uint256) {
-        return _to - _from;
+        return (_to > _from) ? (_to - _from) : 0;
     }
 
     // Update reward variables of the given pool to be up-to-date.
@@ -102,7 +102,10 @@ contract BetterStaking is Manageable {
         if (uint32(block.timestamp) <= pool.lastRewardTime) {
             return;
         }
-        uint256 multiplier = getMultiplier(pool.lastRewardTime, uint32(block.timestamp));
+
+        uint32 farming_end = pool.start + pool.duration;
+        uint32 to = uint32(block.timestamp) > farming_end ? farming_end : uint32(block.timestamp);
+        uint256 multiplier = getMultiplier(pool.lastRewardTime, to);
         uint256 newReward = multiplier * pool.rewardTokenPerSecond;
         // no stakers, nothing to distribute
         if (pool.depositedAmount == 0) {
@@ -135,7 +138,9 @@ contract BetterStaking is Manageable {
 
         uint256 accRewardPerShare = pool.accRewardPerShare;
         if (uint32(block.timestamp) > pool.lastRewardTime && pool.depositedAmount != 0) {
-            uint256 multiplier = getMultiplier(pool.lastRewardTime, uint32(block.timestamp));
+            uint32 farming_end = pool.start + pool.duration;
+            uint32 to = uint32(block.timestamp) > farming_end ? farming_end : uint32(block.timestamp);
+            uint256 multiplier = getMultiplier(pool.lastRewardTime, to);
             uint256 newReward = multiplier * pool.rewardTokenPerSecond;
             accRewardPerShare += (newReward * PRECISION_MULTIPLIER) / pool.depositedAmount;
         }
@@ -218,6 +223,7 @@ contract BetterStaking is Manageable {
     function pullUnclaimedTokens(uint256 _pid) external onlyAdmin {
         PoolInfo storage pool = poolInfo[_pid];
 
+        updatePool(_pid);
         uint256 _unclaimed = pool.unclaimedRewardTokens;
         require (_unclaimed > 0, "BetterStaking::pullUnclaimedTokens: zero unclaimed amount");
 
