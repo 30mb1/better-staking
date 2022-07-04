@@ -29,11 +29,11 @@ abstract contract Manageable is Ownable {
         _;
     }
 
-    function isAdmin(address user) public view {
+    function isAdmin(address user) public view returns (bool) {
         return _admins[user];
     }
 
-    function isStakingManager(address user) public view {
+    function isStakingManager(address user) public view returns (bool) {
         return _stakingManagers[user];
     }
 

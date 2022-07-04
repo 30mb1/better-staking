@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./Manageable.sol";
 
 
-contract BetterFarm is Manageable {
+contract BetterStaking is Manageable {
     using SafeERC20 for IERC20;
 
     // Info of each user.
@@ -66,13 +66,13 @@ contract BetterFarm is Manageable {
         uint32 _vestingStart,
         uint32 _vestingDuration
     ) public onlyStakingManager {
-        uint32 lastRewardTime = block.timestamp > _start ? block.timestamp : _start;
-        uint256 rewardTokenPerSecond = rewardTokensToDistribute / duration;
+        uint32 lastRewardTime = uint32(block.timestamp) > _start ? uint32(block.timestamp) : _start;
+        uint256 rewardTokenPerSecond = _rewardTokensToDistribute / _duration;
         poolInfo.push(PoolInfo({
             depositToken: _depositToken,
             rewardToken: _rewardToken,
             rewardTokensToDistribute: _rewardTokensToDistribute,
-            rewardTokenPerSecond: _rewardTokenPerSecond,
+            rewardTokenPerSecond: rewardTokenPerSecond,
             lastRewardTime: lastRewardTime,
             depositedAmount: 0,
             accRewardPerShare: 0,
@@ -85,7 +85,7 @@ contract BetterFarm is Manageable {
         }));
 
         _rewardToken.safeTransferFrom(_msgSender(), address(this), _rewardTokensToDistribute);
-        rewardTokens[address(_depositToken)] += _rewardTokensToDistribute;
+        rewardTokens[address(_rewardToken)] += _rewardTokensToDistribute;
 
         emit NewPool(_depositToken, _rewardToken, _rewardTokensToDistribute, _start, _duration, _lockTime);
     }
@@ -99,32 +99,32 @@ contract BetterFarm is Manageable {
     function updatePool(uint256 _pid) public {
         PoolInfo storage pool = poolInfo[_pid];
         // pool was updated on this block already or farming not started
-        if (block.timestamp <= pool.lastRewardTime) {
+        if (uint32(block.timestamp) <= pool.lastRewardTime) {
             return;
         }
-        uint256 multiplier = getMultiplier(pool.lastRewardTime, block.timestamp);
+        uint256 multiplier = getMultiplier(pool.lastRewardTime, uint32(block.timestamp));
         uint256 newReward = multiplier * pool.rewardTokenPerSecond;
         // no stakers, nothing to distribute
         if (pool.depositedAmount == 0) {
             pool.unclaimedRewardTokens += newReward;
-            pool.lastRewardTime = block.timestamp;
+            pool.lastRewardTime = uint32(block.timestamp);
             return;
         }
         pool.accRewardPerShare = pool.accRewardPerShare + ((newReward * PRECISION_MULTIPLIER) / pool.depositedAmount);
-        pool.lastRewardTime = block.timestamp;
+        pool.lastRewardTime = uint32(block.timestamp);
     }
 
     function _calcPendingReward(UserInfo storage user, uint256 accRewardPerShare) internal view returns (uint256 pending) {
         return ((user.amount * accRewardPerShare) / PRECISION_MULTIPLIER) - user.rewardDebt;
     }
 
-    function _calcReleasable(PoolInfo storage pool, uint256 vested, uint256 released) internal returns (uint256 releasable) {
-        if (block.timestamp <= pool.vestingStart) {
+    function _calcReleasable(PoolInfo storage pool, uint256 vested, uint256 released) internal view returns (uint256 releasable) {
+        if (uint32(block.timestamp) <= pool.vestingStart) {
             return 0;
-        } else if (block.timestamp >= (pool.vestingStart + pool.vestingDuration)) {
+        } else if (uint32(block.timestamp) >= (pool.vestingStart + pool.vestingDuration)) {
             return vested - released;
         } else {
-            return (vested * (block.timestamp - pool.vestingStart)) / (pool.vestingDuration) - released;
+            return (vested * (uint32(block.timestamp) - pool.vestingStart)) / (pool.vestingDuration) - released;
         }
     }
 
@@ -134,8 +134,8 @@ contract BetterFarm is Manageable {
         UserInfo storage user = userInfo[_pid][_user];
 
         uint256 accRewardPerShare = pool.accRewardPerShare;
-        if (block.timestamp > pool.lastRewardTime && pool.depositedAmount != 0) {
-            uint256 multiplier = getMultiplier(pool.lastRewardTime, block.timestamp);
+        if (uint32(block.timestamp) > pool.lastRewardTime && pool.depositedAmount != 0) {
+            uint256 multiplier = getMultiplier(pool.lastRewardTime, uint32(block.timestamp));
             uint256 newReward = multiplier * pool.rewardTokenPerSecond;
             accRewardPerShare += (newReward * PRECISION_MULTIPLIER) / pool.depositedAmount;
         }
@@ -177,7 +177,7 @@ contract BetterFarm is Manageable {
         UserInfo storage user = userInfo[_pid][_msgSender()];
 
         require (user.amount >= _amount, "BetterStaking::withdraw: withdraw amount exceeds balance");
-        require (pool.start + pool.lockTime <= block.timestamp, "BetterStaking::withdraw: lock is active");
+        require (pool.start + pool.lockTime <= uint32(block.timestamp), "BetterStaking::withdraw: lock is active");
 
         updatePool(_pid);
         uint256 pending = _calcPendingReward(user, pool.accRewardPerShare);
