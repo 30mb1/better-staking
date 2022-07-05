@@ -109,7 +109,7 @@ describe("Better staking test", function () {
         const expected_reward = pool.rewardTokenPerSecond * 10;
 
         // move to farming start
-        await ethers.provider.send("evm_setNextBlockTimestamp", [pool.start + 10]);
+        await ethers.provider.send("evm_setNextBlockTimestamp", [pool.start.add(10).toNumber()]);
         await farm.connect(alice).claim(0);
 
         const user = await farm.userInfo(0, alice.address);
@@ -125,7 +125,7 @@ describe("Better staking test", function () {
         const pool = await farm.poolInfo(0);
         const expected_reward = pool.rewardTokenPerSecond * 20;
 
-        await ethers.provider.send("evm_setNextBlockTimestamp", [pool.vestingStart + 10]);
+        await ethers.provider.send("evm_setNextBlockTimestamp", [pool.vestingStart.add(10).toNumber()]);
         // mine block because we want pendingReward to work
         await ethers.provider.send("evm_mine");
 
@@ -140,7 +140,7 @@ describe("Better staking test", function () {
         const expected_reward = pool.rewardTokenPerSecond * 30;
 
         // 30 sec duration + 5 more
-        await ethers.provider.send("evm_setNextBlockTimestamp", [pool.start + 35]);
+        await ethers.provider.send("evm_setNextBlockTimestamp", [pool.start.add(35).toNumber()]);
         // mine block because we want pendingReward to work
         await ethers.provider.send("evm_mine");
 
@@ -154,7 +154,7 @@ describe("Better staking test", function () {
         const pool = await farm.poolInfo(0);
         const expected_reward = pool.rewardTokenPerSecond * 30;
 
-        await ethers.provider.send("evm_setNextBlockTimestamp", [pool.vestingStart + 30]);
+        await ethers.provider.send("evm_setNextBlockTimestamp", [pool.vestingStart.add(30).toNumber()]);
         // mine block because we want pendingReward to work
         await ethers.provider.send("evm_mine");
 
