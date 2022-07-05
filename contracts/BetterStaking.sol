@@ -26,12 +26,12 @@ contract BetterStaking is Manageable {
         uint256 rewardTokenPerSecond;
         uint256 rewardTokensToDistribute; // overall sum of reward tokens to distribute across users
         uint256 unclaimedRewardTokens; // reward tokens that could be claimed by admins, because no users pretend to claim it
-        uint32 lastRewardTime;  // Last block timestamp that tokens distribution occurs.
-        uint32 start; // timestamp when farming starts
-        uint32 duration; // duration of farming after start
-        uint32 lockTime;
-        uint32 vestingStart;
-        uint32 vestingDuration;
+        uint64 lastRewardTime;  // Last block timestamp that tokens distribution occurs.
+        uint64 start; // timestamp when farming starts
+        uint64 duration; // duration of farming after start
+        uint64 lockTime;
+        uint64 vestingStart;
+        uint64 vestingDuration;
     }
 
     // amount of deposited tokens that cannot be withdrawn by admins
@@ -49,7 +49,7 @@ contract BetterStaking is Manageable {
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
     event WithdrawUnclaimed(uint256 amount);
-    event NewPool(IERC20 depositToken, IERC20 rewardToken, uint256 rewardTokensToDistribute, uint32 start, uint32 duration, uint32 lockTime);
+    event NewPool(IERC20 depositToken, IERC20 rewardToken, uint256 rewardTokensToDistribute, uint64 start, uint64 duration, uint64 lockTime);
 
     function poolLength() external view returns (uint256) {
         return poolInfo.length;
@@ -60,13 +60,13 @@ contract BetterStaking is Manageable {
         uint256 _rewardTokensToDistribute,
         IERC20 _depositToken,
         IERC20 _rewardToken,
-        uint32 _start,
-        uint32 _duration,
-        uint32 _lockTime,
-        uint32 _vestingStart,
-        uint32 _vestingDuration
+        uint64 _start,
+        uint64 _duration,
+        uint64 _lockTime,
+        uint64 _vestingStart,
+        uint64 _vestingDuration
     ) public onlyStakingManager {
-        uint32 lastRewardTime = uint32(block.timestamp) > _start ? uint32(block.timestamp) : _start;
+        uint64 lastRewardTime = uint64(block.timestamp) > _start ? uint64(block.timestamp) : _start;
         uint256 rewardTokenPerSecond = _rewardTokensToDistribute / _duration;
         poolInfo.push(PoolInfo({
             depositToken: _depositToken,
@@ -99,22 +99,22 @@ contract BetterStaking is Manageable {
     function updatePool(uint256 _pid) public {
         PoolInfo storage pool = poolInfo[_pid];
         // pool was updated on this block already or farming not started
-        if (uint32(block.timestamp) <= pool.lastRewardTime) {
+        if (uint64(block.timestamp) <= pool.lastRewardTime) {
             return;
         }
 
-        uint32 farming_end = pool.start + pool.duration;
-        uint32 to = uint32(block.timestamp) > farming_end ? farming_end : uint32(block.timestamp);
+        uint64 farming_end = pool.start + pool.duration;
+        uint64 to = uint64(block.timestamp) > farming_end ? farming_end : uint64(block.timestamp);
         uint256 multiplier = getMultiplier(pool.lastRewardTime, to);
         uint256 newReward = multiplier * pool.rewardTokenPerSecond;
         // no stakers, nothing to distribute
         if (pool.depositedAmount == 0) {
             pool.unclaimedRewardTokens += newReward;
-            pool.lastRewardTime = uint32(block.timestamp);
+            pool.lastRewardTime = uint64(block.timestamp);
             return;
         }
         pool.accRewardPerShare = pool.accRewardPerShare + ((newReward * PRECISION_MULTIPLIER) / pool.depositedAmount);
-        pool.lastRewardTime = uint32(block.timestamp);
+        pool.lastRewardTime = uint64(block.timestamp);
     }
 
     function _calcPendingReward(UserInfo storage user, uint256 accRewardPerShare) internal view returns (uint256 pending) {
@@ -122,12 +122,12 @@ contract BetterStaking is Manageable {
     }
 
     function _calcReleasable(PoolInfo storage pool, uint256 vested, uint256 released) internal view returns (uint256 releasable) {
-        if (uint32(block.timestamp) <= pool.vestingStart) {
+        if (uint64(block.timestamp) <= pool.vestingStart) {
             return 0;
-        } else if (uint32(block.timestamp) >= (pool.vestingStart + pool.vestingDuration)) {
+        } else if (uint64(block.timestamp) >= (pool.vestingStart + pool.vestingDuration)) {
             return vested - released;
         } else {
-            return (vested * (uint32(block.timestamp) - pool.vestingStart)) / (pool.vestingDuration) - released;
+            return (vested * (uint64(block.timestamp) - pool.vestingStart)) / (pool.vestingDuration) - released;
         }
     }
 
@@ -137,9 +137,9 @@ contract BetterStaking is Manageable {
         UserInfo storage user = userInfo[_pid][_user];
 
         uint256 accRewardPerShare = pool.accRewardPerShare;
-        if (uint32(block.timestamp) > pool.lastRewardTime && pool.depositedAmount != 0) {
-            uint32 farming_end = pool.start + pool.duration;
-            uint32 to = uint32(block.timestamp) > farming_end ? farming_end : uint32(block.timestamp);
+        if (uint64(block.timestamp) > pool.lastRewardTime && pool.depositedAmount != 0) {
+            uint64 farming_end = pool.start + pool.duration;
+            uint64 to = uint64(block.timestamp) > farming_end ? farming_end : uint64(block.timestamp);
             uint256 multiplier = getMultiplier(pool.lastRewardTime, to);
             uint256 newReward = multiplier * pool.rewardTokenPerSecond;
             accRewardPerShare += (newReward * PRECISION_MULTIPLIER) / pool.depositedAmount;
@@ -182,7 +182,7 @@ contract BetterStaking is Manageable {
         UserInfo storage user = userInfo[_pid][_msgSender()];
 
         require (user.amount >= _amount, "BetterStaking::withdraw: withdraw amount exceeds balance");
-        require (pool.start + pool.lockTime <= uint32(block.timestamp), "BetterStaking::withdraw: lock is active");
+        require (pool.start + pool.lockTime <= uint64(block.timestamp), "BetterStaking::withdraw: lock is active");
 
         updatePool(_pid);
         uint256 pending = _calcPendingReward(user, pool.accRewardPerShare);
