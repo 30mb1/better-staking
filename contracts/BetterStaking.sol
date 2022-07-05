@@ -1,29 +1,30 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 pragma solidity =0.8.6;
 
 
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "./libraries/TokenUtils.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./Manageable.sol";
 
 
 contract BetterStaking is Manageable {
-    using SafeERC20 for IERC20;
+    using TokenUtils for IERC20;
 
     // Info of each user.
     struct UserInfo {
-        uint256 amount;     // How many deposit tokens the user has provided.
-        uint256 rewardDebt; // Reward debt. See explanation below.
+        uint256 amount; // How many deposit tokens the user has provided.
+        uint256 rewardDebt;
         uint256 vested;
         uint256 released;
     }
 
     // Info of each pool.
     struct PoolInfo {
-        IERC20 depositToken;           // Address of deposit token contract
-        IERC20 rewardToken;            // Address of reward token contract
-        uint256 depositedAmount;         // number of deposited tokens
+        IERC20 depositToken; // Address of deposit token contract
+        IERC20 rewardToken; // Address of reward token contract
+        uint256 depositedAmount; // number of deposited tokens
         uint256 accRewardPerShare; // Accumulated reward per share, times 1e12. See below.
-        uint256 rewardTokenPerSecond;
+        uint256 rewardTokenPerSecond; // number of tokens distributed per second between all users in pool
         uint256 rewardTokensToDistribute; // overall sum of reward tokens to distribute across users
         uint256 unclaimedRewardTokens; // reward tokens that could be claimed by admins, because no users pretend to claim it
         uint64 lastRewardTime;  // Last block timestamp that tokens distribution occurs.
@@ -43,51 +44,68 @@ contract BetterStaking is Manageable {
     PoolInfo[] public poolInfo;
     // Info of each user that stakes deposit tokens.
     mapping (uint256 => mapping (address => UserInfo)) public userInfo;
-    uint256 constant PRECISION_MULTIPLIER = 1e12;
+    uint256 constant PRECISION_MULTIPLIER = 1e18;
 
-    event Reward(address indexed user, uint256 indexed pid, uint256 amount);
-    event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
-    event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event Reward(uint256 indexed pid, address indexed user, uint256 amount);
+    event Deposit(uint256 indexed pid, address indexed user, uint256 amount);
+    event Withdraw(uint256 indexed pid, address indexed user, uint256 amount);
     event WithdrawUnclaimed(uint256 amount);
-    event NewPool(IERC20 depositToken, IERC20 rewardToken, uint256 rewardTokensToDistribute, uint64 start, uint64 duration, uint64 lockTime);
+    event NewPool(
+        IERC20 depositToken,
+        IERC20 rewardToken,
+        uint256 rewardTokensToDistribute,
+        uint64 start,
+        uint64 duration,
+        uint64 lockTime,
+        uint256 pid
+    );
 
     function poolLength() external view returns (uint256) {
         return poolInfo.length;
     }
 
-    // Add a new lp to the pool. Can only be called by the staking manager.
+    /// @notice Add a new farm pool. Can only be called by the staking manager.
+    /// Same deposit/reward tokens could be used more than once
+    /// @param depositToken_ Token used for users deposits
+    /// @param rewardToken_ Token used as a reward for staking in pool
+    /// @param rewardTokensToDistribute_ Amount of reward tokens to distribute among users
+    /// @param start_ Timestamp when farming starts. Users who deposited before this moment wont be rewarded until start
+    /// @param duration_ Interval of farming after start
+    /// @param lockTime_ Users wont be able to withdraw deposit tokens during this period after farming start
+    /// @param vestingStart_ Timestamp when reward vesting will start
+    /// @param vestingDuration_ Interval of reward vesting after start
     function add(
-        uint256 _rewardTokensToDistribute,
-        IERC20 _depositToken,
-        IERC20 _rewardToken,
-        uint64 _start,
-        uint64 _duration,
-        uint64 _lockTime,
-        uint64 _vestingStart,
-        uint64 _vestingDuration
+        IERC20 depositToken_,
+        IERC20 rewardToken_,
+        uint256 rewardTokensToDistribute_,
+        uint64 start_,
+        uint64 duration_,
+        uint64 lockTime_,
+        uint64 vestingStart_,
+        uint64 vestingDuration_
     ) public onlyStakingManager {
-        uint64 lastRewardTime = uint64(block.timestamp) > _start ? uint64(block.timestamp) : _start;
-        uint256 rewardTokenPerSecond = _rewardTokensToDistribute / _duration;
+        uint64 lastRewardTime = uint64(block.timestamp) > start_ ? uint64(block.timestamp) : start_;
+        rewardTokensToDistribute_ = rewardToken_.transferFromUser(_msgSender(), rewardTokensToDistribute_);
+        rewardTokens[address(rewardToken_)] += rewardTokensToDistribute_;
+
+        uint256 rewardTokenPerSecond = rewardTokensToDistribute_ / duration_;
         poolInfo.push(PoolInfo({
-            depositToken: _depositToken,
-            rewardToken: _rewardToken,
-            rewardTokensToDistribute: _rewardTokensToDistribute,
+            depositToken: depositToken_,
+            rewardToken: rewardToken_,
+            rewardTokensToDistribute: rewardTokensToDistribute_,
             rewardTokenPerSecond: rewardTokenPerSecond,
             lastRewardTime: lastRewardTime,
             depositedAmount: 0,
             accRewardPerShare: 0,
             unclaimedRewardTokens: 0,
-            start: _start,
-            duration: _duration,
-            lockTime: _lockTime,
-            vestingStart: _vestingStart,
-            vestingDuration: _vestingDuration
+            start: start_,
+            duration: duration_,
+            lockTime: lockTime_,
+            vestingStart: vestingStart_,
+            vestingDuration: vestingDuration_
         }));
 
-        _rewardToken.safeTransferFrom(_msgSender(), address(this), _rewardTokensToDistribute);
-        rewardTokens[address(_rewardToken)] += _rewardTokensToDistribute;
-
-        emit NewPool(_depositToken, _rewardToken, _rewardTokensToDistribute, _start, _duration, _lockTime);
+        emit NewPool(depositToken_, rewardToken_, rewardTokensToDistribute_, start_, duration_, lockTime_, poolInfo.length);
     }
 
     // Return reward multiplier over the given _from to _to block.
@@ -95,18 +113,15 @@ contract BetterStaking is Manageable {
         return (_to > _from) ? (_to - _from) : 0;
     }
 
-    // Update reward variables of the given pool to be up-to-date.
-    function updatePool(uint256 _pid) public {
-        PoolInfo storage pool = poolInfo[_pid];
+    /// @notice Update reward variables of the given pool.
+    /// @param pid_ The index of the pool. See `poolInfo`.
+    function updatePool(uint256 pid_) public {
+        PoolInfo storage pool = poolInfo[pid_];
         // pool was updated on this block already or farming not started
         if (uint64(block.timestamp) <= pool.lastRewardTime) {
             return;
         }
-
-        uint64 farming_end = pool.start + pool.duration;
-        uint64 to = uint64(block.timestamp) > farming_end ? farming_end : uint64(block.timestamp);
-        uint256 multiplier = getMultiplier(pool.lastRewardTime, to);
-        uint256 newReward = multiplier * pool.rewardTokenPerSecond;
+        uint256 newReward = _calcNewReward(pool);
         // no stakers, nothing to distribute
         if (pool.depositedAmount == 0) {
             pool.unclaimedRewardTokens += newReward;
@@ -115,6 +130,13 @@ contract BetterStaking is Manageable {
         }
         pool.accRewardPerShare = pool.accRewardPerShare + ((newReward * PRECISION_MULTIPLIER) / pool.depositedAmount);
         pool.lastRewardTime = uint64(block.timestamp);
+    }
+
+    function _calcNewReward(PoolInfo storage pool) internal view returns (uint256 _newReward) {
+        uint64 farming_end = pool.start + pool.duration;
+        uint64 to = uint64(block.timestamp) > farming_end ? farming_end : uint64(block.timestamp);
+        uint256 multiplier = getMultiplier(pool.lastRewardTime, to);
+         _newReward = multiplier * pool.rewardTokenPerSecond;
     }
 
     function _calcPendingReward(UserInfo storage user, uint256 accRewardPerShare) internal view returns (uint256 pending) {
@@ -131,17 +153,16 @@ contract BetterStaking is Manageable {
         }
     }
 
-    // View function to see pending tokens on frontend.
-    function pendingReward(uint256 _pid, address _user) external view returns (uint256 locked, uint256 releasable) {
-        PoolInfo storage pool = poolInfo[_pid];
-        UserInfo storage user = userInfo[_pid][_user];
+    /// @notice View function to see pending reward on frontend.
+    /// @param pid_ The index of the pool. See `poolInfo`.
+    /// @param user_ Address of user.
+    function pendingReward(uint256 pid_, address user_) external view returns (uint256 locked, uint256 releasable) {
+        PoolInfo storage pool = poolInfo[pid_];
+        UserInfo storage user = userInfo[pid_][user_];
 
         uint256 accRewardPerShare = pool.accRewardPerShare;
         if (uint64(block.timestamp) > pool.lastRewardTime && pool.depositedAmount != 0) {
-            uint64 farming_end = pool.start + pool.duration;
-            uint64 to = uint64(block.timestamp) > farming_end ? farming_end : uint64(block.timestamp);
-            uint256 multiplier = getMultiplier(pool.lastRewardTime, to);
-            uint256 newReward = multiplier * pool.rewardTokenPerSecond;
+            uint256 newReward = _calcNewReward(pool);
             accRewardPerShare += (newReward * PRECISION_MULTIPLIER) / pool.depositedAmount;
         }
 
@@ -150,12 +171,14 @@ contract BetterStaking is Manageable {
         locked = new_vested - user.released - releasable;
     }
 
-    // Deposit tokens to BetterFarm for reward allocation.
-    function deposit(uint256 _pid, uint256 _amount) external {
-        require (_amount > 0, "BetterStaking::deposit: amount should be positive");
-        PoolInfo storage pool = poolInfo[_pid];
-        UserInfo storage user = userInfo[_pid][_msgSender()];
-        updatePool(_pid);
+    /// @notice Deposit tokens to contract for reward allocation.
+    /// @param pid_ The index of the pool. See `poolInfo`.
+    /// @param amount_ LP token amount to deposit.
+    function deposit(uint256 pid_, uint256 amount_) external {
+        require (amount_ > 0, "BetterStaking::deposit: amount should be positive");
+        PoolInfo storage pool = poolInfo[pid_];
+        UserInfo storage user = userInfo[pid_][_msgSender()];
+        updatePool(pid_);
 
         // user deposited something already, transfer reward
         if (user.amount > 0) {
@@ -163,46 +186,50 @@ contract BetterStaking is Manageable {
             user.vested += pending;
         }
 
-        pool.depositToken.safeTransferFrom(_msgSender(), address(this), _amount);
-
+        amount_ = pool.depositToken.transferFromUser(_msgSender(), amount_);
         // update user deposit amount and stats
-        user.amount += _amount;
-        pool.depositedAmount += _amount;
+        user.amount += amount_;
+        pool.depositedAmount += amount_;
         user.rewardDebt = (user.amount * pool.accRewardPerShare) / PRECISION_MULTIPLIER;
-        depositedTokens[address(pool.depositToken)] += _amount;
+        depositedTokens[address(pool.depositToken)] += amount_;
 
-        emit Deposit(_msgSender(), _pid, _amount);
+        emit Deposit(pid_, _msgSender(), amount_);
     }
 
-    // Withdraw LP tokens from BetterFarm.
-    function withdraw(uint256 _pid, uint256 _amount) external {
-        require (_amount > 0, "BetterStaking::withdraw: amount should be positive");
+    /// @notice Withdraw tokens from contract.
+    /// @param pid_ The index of the pool. See `poolInfo`.
+    /// @param amount_ Token amount to withdraw.
+    function withdraw(uint256 pid_, uint256 amount_) external {
+        require (amount_ > 0, "BetterStaking::withdraw: amount should be positive");
 
-        PoolInfo storage pool = poolInfo[_pid];
-        UserInfo storage user = userInfo[_pid][_msgSender()];
+        PoolInfo storage pool = poolInfo[pid_];
+        UserInfo storage user = userInfo[pid_][_msgSender()];
 
-        require (user.amount >= _amount, "BetterStaking::withdraw: withdraw amount exceeds balance");
+        // transfer first to be sure we know exact amount of tokens transferred
+        amount_ = pool.depositToken.transferToUser(_msgSender(), amount_);
+
+        require (user.amount >= amount_, "BetterStaking::withdraw: withdraw amount exceeds balance");
         require (pool.start + pool.lockTime <= uint64(block.timestamp), "BetterStaking::withdraw: lock is active");
 
-        updatePool(_pid);
+        updatePool(pid_);
         uint256 pending = _calcPendingReward(user, pool.accRewardPerShare);
         user.vested += pending;
 
-        user.amount -= _amount;
-        pool.depositedAmount -= _amount;
+        user.amount -= amount_;
+        pool.depositedAmount -= amount_;
         user.rewardDebt = (user.amount * pool.accRewardPerShare) / PRECISION_MULTIPLIER;
-        depositedTokens[address(pool.depositToken)] -= _amount;
+        depositedTokens[address(pool.depositToken)] -= amount_;
 
-        pool.depositToken.safeTransfer(_msgSender(), _amount);
-
-        emit Withdraw(_msgSender(), _pid, _amount);
+        emit Withdraw(pid_, _msgSender(), amount_);
     }
 
-    function claim(uint256 _pid) external {
-        PoolInfo storage pool = poolInfo[_pid];
-        UserInfo storage user = userInfo[_pid][_msgSender()];
+    /// @notice Harvest pending reward tokens for given pool
+    /// @param pid_ The index of the pool. See `poolInfo`.
+    function claim(uint256 pid_) external {
+        PoolInfo storage pool = poolInfo[pid_];
+        UserInfo storage user = userInfo[pid_][_msgSender()];
 
-        updatePool(_pid);
+        updatePool(pid_);
         uint256 pending = _calcPendingReward(user, pool.accRewardPerShare);
         user.vested += pending;
 
@@ -211,38 +238,44 @@ contract BetterStaking is Manageable {
             user.released += releasable;
 
             if (releasable > 0) {
-                pool.rewardToken.safeTransfer(_msgSender(), releasable);
+                releasable = pool.rewardToken.transferToUser(_msgSender(), releasable);
                 rewardTokens[address(pool.rewardToken)] -= releasable;
-                emit Reward(_msgSender(), _pid, releasable);
+                emit Reward(pid_, _msgSender(), releasable);
             }
         }
 
         user.rewardDebt = (user.amount * pool.accRewardPerShare) / PRECISION_MULTIPLIER;
     }
 
-    function pullUnclaimedTokens(uint256 _pid) external onlyAdmin {
-        PoolInfo storage pool = poolInfo[_pid];
+    /// @notice Claim reward tokens that wont be claimed by users.
+    /// Could be called only by admin
+    /// @param pid_ The index of the pool. See `poolInfo`.
+    function pullUnclaimedTokens(uint256 pid_) external onlyAdmin {
+        PoolInfo storage pool = poolInfo[pid_];
 
-        updatePool(_pid);
+        updatePool(pid_);
         uint256 _unclaimed = pool.unclaimedRewardTokens;
         require (_unclaimed > 0, "BetterStaking::pullUnclaimedTokens: zero unclaimed amount");
 
         pool.unclaimedRewardTokens = 0;
-        pool.rewardToken.safeTransfer(_msgSender(), _unclaimed);
+        _unclaimed = pool.rewardToken.transferToUser(_msgSender(), _unclaimed);
         rewardTokens[address(pool.rewardToken)] -= _unclaimed;
 
         emit WithdrawUnclaimed(_unclaimed);
     }
 
-    function sweep(address token, uint256 amount) external onlyAdmin {
-        uint256 token_balance = IERC20(token).balanceOf(address(this));
+    /// @notice Claim tokens sent to this contract by mistake. Tokens deposited by users or reward tokens are reserved
+    /// @param token_ Token to withdraw
+    /// @param amount_ Amount to withdraw
+    function sweep(address token_, uint256 amount_) external onlyAdmin {
+        uint256 token_balance = IERC20(token_).balanceOf(address(this));
 
-        require (amount <= token_balance, "BetterStaking::sweep: amount exceeds balance");
+        require (amount_ <= token_balance, "BetterStaking::sweep: amount exceeds balance");
         require (
-            token_balance - amount >= depositedTokens[token] + rewardTokens[token],
+            token_balance - amount_ >= depositedTokens[token_] + rewardTokens[token_],
             "BetterStaking::sweep: cant withdraw reserved tokens"
         );
 
-        IERC20(token).safeTransfer(_msgSender(), amount);
+        IERC20(token_).transferToUser(_msgSender(), amount_);
     }
 }

@@ -16,5 +16,8 @@
     "hardhat": "^2.9.1",
     "bignumber.js": "^9.0.1",
     "hardhat-deploy": "^0.10.5"
+  },
+  "devDependencies": {
+    "hardhat-gas-reporter": "^1.0.8"
   }
 }

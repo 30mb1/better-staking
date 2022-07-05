@@ -31,9 +31,9 @@ describe("Better staking test", function () {
         await token1.connect(owner).approve(farm.address, 1000000);
 
         await farm.connect(owner).add(
-            1000000,
             token.address,
             token1.address,
+            1000000,
             block.timestamp + 20, // farming start
             30, // duration
             20, // lock time
@@ -42,9 +42,9 @@ describe("Better staking test", function () {
         );
 
         await farm.connect(owner).add(
-            500000,
             token1.address,
             token.address,
+            500000,
             block.timestamp + 20, // farming start
             30, // duration
             20, // lock time
