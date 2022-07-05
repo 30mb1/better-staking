@@ -128,7 +128,7 @@ contract BetterStaking is Manageable {
             pool.lastRewardTime = uint64(block.timestamp);
             return;
         }
-        pool.accRewardPerShare = pool.accRewardPerShare + ((newReward * PRECISION_MULTIPLIER) / pool.depositedAmount);
+        pool.accRewardPerShare += ((newReward * PRECISION_MULTIPLIER) / pool.depositedAmount);
         pool.lastRewardTime = uint64(block.timestamp);
     }
 
